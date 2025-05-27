@@ -21,6 +21,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -36,7 +37,6 @@ import org.jsoup.nodes.Element
 import rx.Observable
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class ShonenJumpPlus : ConfigurableSource, HttpSource() {
@@ -46,10 +46,11 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
     override val lang = "ja"
     override val supportsLatest = true
 
-    private val deviceId = UUID.randomUUID().toString().substring(0, 16)
+    private var deviceId = UUID.randomUUID().toString().replace("-", "").substring(0, 16)
     private var bearerToken: String? = null
     private var userAccountId: String? = null
     private var tokenExpiry: Long = 0
+    private var addUserDeviceCalled = false
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -81,49 +82,16 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
-    private val bareClient: OkHttpClient = network.client.newBuilder()
-        .build()
 
-    private fun fetchBearerToken(): Boolean {
-        val url = "$apiBase/user_account/access_token".toHttpUrl()
-        val request = Request.Builder()
-            .url(url)
-            .headers(baseHeaders)
-            .post("".toRequestBody())
-            .build()
-
-        try {
-            val response = bareClient.newCall(request).execute()
-            val bodyString = response.body.string()
-
-            if (response.isSuccessful) {
-                val jsonResponse = json.parseToJsonElement(bodyString).jsonObject
-                bearerToken = jsonResponse["access_token"]?.jsonPrimitive?.content
-                userAccountId = jsonResponse["user_account_id"]?.jsonPrimitive?.content
-                tokenExpiry = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1)
-                return true
-            } else {
-                return false
-            }
-        } catch (e: Exception) {
-            return false
-        }
-    }
-
-    private val baseHeaders by lazy {
-        Headers.Builder()
-            .add("Origin", baseUrl)
-            .add("Referer", baseUrl)
-            .add("X-Giga-Device-Id", deviceId)
-            .add("User-Agent", "ShonenJumpPlus-Android/4.0.18")
-            .build()
-    }
-
-    override fun headersBuilder(): Headers.Builder = baseHeaders.newBuilder()
+    override fun headersBuilder(): Headers.Builder = Headers.Builder()
+        .add("Origin", baseUrl)
+        .add("Referer", baseUrl)
+        .add("X-Giga-Device-Id", deviceId)
+        .add("User-Agent", "ShonenJumpPlus-Android/4.0.18")
 
     // Popular Manga
     override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/series", headers)
+        return GET("$baseUrl/series", headersBuilder().build())
     }
 
     override fun popularMangaParse(response: Response): MangasPage {
@@ -175,7 +143,7 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
         } else {
             val collectionPath = (filters[0] as? CollectionFilter)?.selected?.path ?: ""
             val path = if (collectionPath.isBlank()) "" else "/$collectionPath"
-            client.newCall(GET("$baseUrl/series$path", headers))
+            client.newCall(GET("$baseUrl/series$path", headersBuilder().build()))
                 .asObservable()
                 .map(::popularMangaParse)
         }
@@ -185,7 +153,7 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
         val url = "$baseUrl/search".toHttpUrl().newBuilder()
             .addQueryParameter("q", query)
             .build()
-        return GET(url, headers)
+        return GET(url, headersBuilder().build())
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
@@ -223,7 +191,7 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
     }
 
     override fun chapterListRequest(manga: SManga): Request {
-        return GET(baseUrl + manga.url, headers)
+        return GET(baseUrl + manga.url, headersBuilder().build())
     }
 
     @Serializable
@@ -234,6 +202,10 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
     @Serializable
     private data class Data(
         val series: Series? = null,
+        val episode: EpisodeData? = null,
+        val consumeOnetimeFree: ConsumeOnetimeFreePayload? = null,
+        val rent: RentPayload? = null,
+        val addUserDevice: AddUserDevicePayload? = null,
     )
 
     @Serializable
@@ -256,6 +228,58 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
         @SerialName("databaseId") val id: String? = null,
         val title: String? = null,
         val publishedAt: String? = null,
+    )
+
+    @Serializable
+    private data class ConsumeOnetimeFreePayload(
+        val isSuccess: Boolean? = null,
+        val readableProduct: ReadableProduct? = null,
+    )
+
+    @Serializable
+    private data class ReadableProduct(
+        val databaseId: String? = null,
+        val id: String? = null,
+        val accessibility: String? = null,
+        val purchaseInfo: PurchaseInfo? = null,
+    )
+
+    @Serializable
+    private data class RentPayload(
+        val product: Product? = null,
+        val paidPoint: Int? = null,
+        val freePoint: Int? = null,
+        val userAccount: UserAccount? = null,
+    )
+
+    @Serializable
+    private data class Product(
+        val id: String? = null,
+        val databaseId: String? = null,
+        val accessibility: String? = null,
+        val purchaseInfo: PurchaseInfo? = null,
+    )
+
+    @Serializable
+    private data class UserAccount(
+        val databaseId: String? = null,
+        val externalId: String? = null,
+        val pointWallet: PointWallet? = null,
+    )
+
+    @Serializable
+    private data class PointWallet(
+        val free: Int? = null,
+        val total: Int? = null,
+        val paid: Int? = null,
+    )
+
+    @Serializable
+    private data class AddUserDevicePayload(
+        val isSuccess: Boolean? = null,
+        val grantedFreePointAmount: Int? = null,
+        val pointGrantEventId: String? = null,
+        val userAccount: UserAccount? = null,
     )
 
     // Chapter List
@@ -298,6 +322,7 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
         val request = Request.Builder()
             .url("$apiBase/graphql?opname=$operationName")
             .headers(graphQLHeaders(operationName))
+            .headers(headersBuilder().build())
             .post(json.encodeToString(payload).toRequestBody())
             .build()
 
@@ -330,17 +355,31 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
             val episodeData = jsonResponse["data"]?.jsonObject?.get("episode")?.jsonObject
                 ?: throw Exception("Invalid episode data")
 
-            val isFree = episodeData["purchaseInfo"]?.jsonObject
-                ?.get("purchasableViaOnetimeFree")?.jsonPrimitive?.booleanOrNull ?: false
+            val purchaseInfo = episodeData["purchaseInfo"]?.jsonObject
+            val isFree = purchaseInfo?.get("purchasableViaOnetimeFree")?.jsonPrimitive?.booleanOrNull ?: false
+            val rentable = purchaseInfo?.get("rentable")?.jsonPrimitive?.booleanOrNull ?: false
+            val purchasableViaOnetimeFree = purchaseInfo?.get("purchasableViaOnetimeFree")?.jsonPrimitive?.booleanOrNull ?: false
+
+            val episodeId = episodeData["id"]?.jsonPrimitive?.content
+                ?: throw Exception("Missing episode ID")
 
             if (isFree) {
-                val episodeId = episodeData["id"]?.jsonPrimitive?.content
-                    ?: throw Exception("Missing episode ID")
-
                 if (!consumeOnetimeFree(episodeId)) {
                     throw Exception("Failed to consume free chapter")
                 }
-
+                val newResponse = client.newCall(pageListRequest(chapter)).execute()
+                val newResponseBody = newResponse.body.string()
+                newResponse.close()
+                pageListParseFromString(newResponseBody)
+            } else if (purchasableViaOnetimeFree) {
+                pageListParseFromString(responseBody)
+            } else if (rentable) {
+                if (!addUserDeviceCalled) {
+                    addUserDevice()
+                }
+                if (!rentChapter(episodeId, purchaseInfo?.get("unitPrice")?.jsonPrimitive?.content?.toIntOrNull() ?: 0)) {
+                    throw Exception("Failed to rent chapter")
+                }
                 val newResponse = client.newCall(pageListRequest(chapter)).execute()
                 val newResponseBody = newResponse.body.string()
                 newResponse.close()
@@ -380,6 +419,19 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
             purchaseInfo {
                 __typename
                 purchasableViaOnetimeFree
+                purchasableViaVideoReward
+                isFree
+                hasPurchased
+                hasPurchasedViaTicket
+                hasRented
+                purchasable
+                purchasableViaTicket
+                purchasableViaPaidPoint
+                unitPrice
+                rentable
+                rentalEndAt
+                rentableByPaidPointOnly
+                rentalTermMin
             }
         }
     }
@@ -423,6 +475,19 @@ class ShonenJumpPlus : ConfigurableSource, HttpSource() {
     @Serializable
     private data class PurchaseInfo(
         val purchasableViaOnetimeFree: Boolean? = null,
+        val purchasableViaVideoReward: Boolean? = null,
+        val isFree: Boolean? = null,
+        val hasPurchased: Boolean? = null,
+        val hasPurchasedViaTicket: Boolean? = null,
+        val hasRented: Boolean? = null,
+        val purchasable: Boolean? = null,
+        val purchasableViaTicket: Boolean? = null,
+        val purchasableViaPaidPoint: Boolean? = null,
+        val unitPrice: Int? = null,
+        val rentable: Boolean? = null,
+        val rentalEndAt: String? = null,
+        val rentableByPaidPointOnly: Boolean? = null,
+        val rentalTermMin: Int? = null,
     )
 
     @Serializable
@@ -508,6 +573,7 @@ fragment PurchaseInfo on PurchaseInfo {
         val request = Request.Builder()
             .url("$apiBase/graphql?opname=$operationName")
             .headers(graphQLHeaders(operationName))
+            .headers(headersBuilder().build())
             .post(json.encodeToString(payload).toRequestBody())
             .build()
 
@@ -523,6 +589,222 @@ fragment PurchaseInfo on PurchaseInfo {
             }
         } catch (e: Exception) {
             false
+        }
+    }
+    private fun rentChapter(episodeId: String, unitPrice: Int = 0): Boolean {
+        val operationName = "Rent"
+        val query = """
+        mutation Rent(${'$'}input: RentInput!) {
+            rent(input: ${'$'}input) {
+                product {
+                    __typename
+                    ... on Episode {
+                        id
+                        databaseId
+                        purchaseInfo {
+                            __typename
+                            ...PurchaseInfo
+                        }
+                        accessibility
+                    }
+                }
+                paidPoint
+                freePoint
+                userAccount {
+                    databaseId
+                    pointWallet {
+                        total
+                        paid
+                        free
+                    }
+                }
+            }
+        }
+        fragment PurchaseInfo on PurchaseInfo {
+            isFree
+            hasPurchased
+            hasPurchasedViaTicket
+            purchasable
+            purchasableViaTicket
+            purchasableViaPaidPoint
+            purchasableViaOnetimeFree
+            unitPrice
+            rentable
+            rentalEndAt
+            hasRented
+            rentableByPaidPointOnly
+            rentalTermMin
+        }
+        """.trimIndent()
+
+        val variables = buildJsonObject {
+            put(
+                "input",
+                buildJsonObject {
+                    put("id", episodeId)
+                    put("unitPrice", unitPrice)
+                },
+            )
+        }
+
+        val payload = buildJsonObject {
+            put("operationName", operationName)
+            put("variables", variables)
+            put("query", query)
+        }
+
+        val request = Request.Builder()
+            .url("$apiBase/graphql?opname=$operationName")
+            .headers(graphQLHeaders(operationName))
+            .headers(headersBuilder().build())
+            .post(json.encodeToString(payload).toRequestBody())
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            val responseBody = response.body.string()
+            val jsonResponse = json.parseToJsonElement(responseBody).jsonObject
+
+            if (!response.isSuccessful) {
+                return false
+            }
+
+            val errors = jsonResponse["errors"]?.jsonArray
+            if (!errors.isNullOrEmpty()) {
+                val errorCode = errors[0]
+                    .jsonObject["extensions"]
+                    ?.jsonObject
+                    ?.get("code")
+                    ?.jsonPrimitive
+                    ?.content
+
+                when (errorCode) {
+                    "FAILED_TO_USE_POINT" -> {
+                        refreshAccount()
+                        if (!addUserDeviceCalled) {
+                            addUserDevice()
+                        }
+                        return rentChapter(episodeId, unitPrice)
+                    }
+                    else -> {
+                        return false
+                    }
+                }
+            }
+
+            val rentData = jsonResponse["data"]?.jsonObject?.get("rent")?.jsonObject
+                ?: run {
+                    return false
+                }
+
+            val product = rentData["product"]?.jsonObject
+            if (product != null) {
+                userAccountId = rentData["userAccount"]?.jsonObject?.get("databaseId")?.jsonPrimitive?.content
+                return true
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun refreshAccount() {
+        deviceId = UUID.randomUUID().toString().replace("-", "").substring(0, 16)
+        bearerToken = null
+        userAccountId = null
+        tokenExpiry = 0
+
+        addUserDeviceCalled = false
+
+        fetchBearerToken()
+    }
+
+    private fun fetchBearerToken(): Boolean {
+        val url = "$apiBase/user_account/access_token".toHttpUrl()
+        val request = Request.Builder()
+            .url(url)
+            .headers(headersBuilder().build())
+            .post("".toRequestBody())
+            .build()
+
+        val bareClient = OkHttpClient()
+
+        try {
+            val response = bareClient.newCall(request).execute()
+            val bodyString = response.body.string()
+
+            if (response.isSuccessful) {
+                val jsonResponse = json.parseToJsonElement(bodyString).jsonObject
+                bearerToken = jsonResponse["access_token"]?.jsonPrimitive?.content
+                userAccountId = jsonResponse["user_account_id"]?.jsonPrimitive?.content
+                tokenExpiry = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1)
+                return true
+            } else {
+                return false
+            }
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun addUserDevice() {
+        val operationName = "AddUserDevice"
+        val query = """
+mutation AddUserDevice(${'$'}input: AddUserDeviceInput!) {
+    addUserDevice(input: ${'$'}input) {
+        __typename
+        ...AddUserDevicePayload
+    }
+}
+fragment AddUserDevicePayload on AddUserDevicePayload {
+    grantedFreePointAmount
+    pointGrantEventId
+    isSuccess
+    userAccount {
+        databaseId
+        externalId
+        pointWallet {
+            free
+        }
+    }
+}
+        """.trimIndent()
+
+        val variables = buildJsonObject {
+            put(
+                "input",
+                buildJsonObject {
+                    put("deviceName", "Android ${(21..34).random()}")
+                    put("modelName", "Device-${UUID.randomUUID().toString().take(8)}")
+                    put("osName", "Android ${(9..14).random()}")
+                },
+            )
+        }
+
+        val payload = buildJsonObject {
+            put("operationName", operationName)
+            put("variables", variables)
+            put("query", query)
+        }
+
+        val request = Request.Builder()
+            .url("$apiBase/graphql?opname=$operationName")
+            .headers(graphQLHeaders(operationName))
+            .headers(headersBuilder().build())
+            .post(json.encodeToString(payload).toRequestBody())
+            .build()
+
+        try {
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+//                val jsonResponse = json.parseToJsonElement(response.body.string()).jsonObject
+//                val addUserDeviceData = jsonResponse["data"]?.jsonObject?.get("addUserDevice")?.jsonObject
+//                val isSuccess = addUserDeviceData?.get("isSuccess")?.jsonPrimitive?.booleanOrNull ?: false
+//                val grantedFreePointAmount = addUserDeviceData?.get("grantedFreePointAmount")?.jsonPrimitive?.content?.toIntOrNull()
+
+                addUserDeviceCalled = true
+            }
+        } catch (_: Exception) {
         }
     }
 
